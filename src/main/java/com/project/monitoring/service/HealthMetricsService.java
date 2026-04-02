@@ -4,9 +4,12 @@ import com.project.monitoring.dto.metrics.CreateHealthMetricRequest;
 import com.project.monitoring.dto.metrics.HealthMetricResponse;
 import com.project.monitoring.entity.HealthMetric;
 import com.project.monitoring.entity.MonitoredService;
+import com.project.monitoring.entity.MonitoringRule;
+import com.project.monitoring.enums.AvailabilityStatus;
 import com.project.monitoring.exception.ResourceNotFoundException;
 import com.project.monitoring.repository.HealthMetricRepository;
 import com.project.monitoring.repository.MonitoredServiceRepository;
+import com.project.monitoring.rules.RuleEvaluationEngine;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -23,16 +26,20 @@ public class HealthMetricsService {
 
     private final HealthMetricRepository healthMetricRepository;
     private final MonitoredServiceRepository monitoredServiceRepository;
+    private final RuleEvaluationEngine ruleEvaluationEngine;
 
     public HealthMetricResponse submitMetric(CreateHealthMetricRequest request) {
         log.info("Submitting health metric for serviceId={}", request.getServiceId());
-        return saveMetric(request);
+
+        MonitoredService service = getServiceOrThrow(request.getServiceId());
+        return saveMetric(service, request);
     }
 
     @Transactional(readOnly = true)
     public List<HealthMetricResponse> getMetricsByService(Long serviceId) {
-        monitoredServiceRepository.findById(serviceId)
-                .orElseThrow(() -> new ResourceNotFoundException("Service not found with id: " + serviceId));
+        log.info("Fetching health metrics for serviceId={}", serviceId);
+
+        getServiceOrThrow(serviceId);
 
         return healthMetricRepository.findByServiceIdOrderByRecordedAtDesc(serviceId)
                 .stream()
@@ -43,29 +50,13 @@ public class HealthMetricsService {
     public HealthMetricResponse simulateMetric(Long serviceId) {
         log.info("Simulating health metric for serviceId={}", serviceId);
 
-        monitoredServiceRepository.findById(serviceId)
-                .orElseThrow(() -> new ResourceNotFoundException("Service not found with id: " + serviceId));
+        MonitoredService service = getServiceOrThrow(serviceId);
+        CreateHealthMetricRequest simulatedRequest = generateSimulatedMetricRequest(serviceId);
 
-        Random random = new Random();
-
-        CreateHealthMetricRequest request = new CreateHealthMetricRequest();
-        request.setServiceId(serviceId);
-        request.setCpuUsage(20.0 + (75.0 * random.nextDouble()));
-        request.setMemoryUsage(30.0 + (60.0 * random.nextDouble()));
-        request.setResponseTimeMs(100.0 + (2900.0 * random.nextDouble()));
-        request.setLatencyMs(10.0 + (490.0 * random.nextDouble()));
-        request.setPacketLoss(0.0 + (20.0 * random.nextDouble()));
-        request.setAvailabilityStatus(random.nextInt(10) < 8
-                ? com.project.monitoring.enums.AvailabilityStatus.UP
-                : com.project.monitoring.enums.AvailabilityStatus.DOWN);
-
-        return saveMetric(request);
+        return saveMetric(service, simulatedRequest);
     }
 
-    private HealthMetricResponse saveMetric(CreateHealthMetricRequest request) {
-        MonitoredService service = monitoredServiceRepository.findById(request.getServiceId())
-                .orElseThrow(() -> new ResourceNotFoundException("Service not found with id: " + request.getServiceId()));
-
+    private HealthMetricResponse saveMetric(MonitoredService service, CreateHealthMetricRequest request) {
         HealthMetric metric = HealthMetric.builder()
                 .service(service)
                 .cpuUsage(request.getCpuUsage())
@@ -78,7 +69,52 @@ public class HealthMetricsService {
                 .build();
 
         HealthMetric savedMetric = healthMetricRepository.save(metric);
+
+        log.info("Health metric saved successfully for service={} metricId={}",
+                service.getName(), savedMetric.getId());
+
+        List<MonitoringRule> violatedRules = ruleEvaluationEngine.evaluate(savedMetric);
+
+        if (!violatedRules.isEmpty()) {
+            log.warn("Metric submission violated {} rule(s) for service={}",
+                    violatedRules.size(),
+                    service.getName());
+
+            violatedRules.forEach(rule ->
+                    log.warn("Violated Rule -> id={}, metric={}, operator={}, threshold={}, severity={}",
+                            rule.getId(),
+                            rule.getMetricName(),
+                            rule.getOperator(),
+                            rule.getThresholdValue(),
+                            rule.getSeverity())
+            );
+        } else {
+            log.info("No rule violations detected for service={}", service.getName());
+        }
+
         return mapToResponse(savedMetric);
+    }
+
+    private CreateHealthMetricRequest generateSimulatedMetricRequest(Long serviceId) {
+        Random random = new Random();
+
+        CreateHealthMetricRequest request = new CreateHealthMetricRequest();
+        request.setServiceId(serviceId);
+        request.setCpuUsage(20.0 + (75.0 * random.nextDouble()));
+        request.setMemoryUsage(30.0 + (60.0 * random.nextDouble()));
+        request.setResponseTimeMs(100.0 + (2900.0 * random.nextDouble()));
+        request.setLatencyMs(10.0 + (490.0 * random.nextDouble()));
+        request.setPacketLoss(0.0 + (20.0 * random.nextDouble()));
+        request.setAvailabilityStatus(random.nextInt(10) < 8
+                ? AvailabilityStatus.UP
+                : AvailabilityStatus.DOWN);
+
+        return request;
+    }
+
+    private MonitoredService getServiceOrThrow(Long serviceId) {
+        return monitoredServiceRepository.findById(serviceId)
+                .orElseThrow(() -> new ResourceNotFoundException("Service not found with id: " + serviceId));
     }
 
     private HealthMetricResponse mapToResponse(HealthMetric metric) {
