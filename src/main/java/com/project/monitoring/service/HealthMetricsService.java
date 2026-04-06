@@ -27,6 +27,7 @@ public class HealthMetricsService {
     private final HealthMetricRepository healthMetricRepository;
     private final MonitoredServiceRepository monitoredServiceRepository;
     private final RuleEvaluationEngine ruleEvaluationEngine;
+    private final IncidentService incidentService;
 
     public HealthMetricResponse submitMetric(CreateHealthMetricRequest request) {
         log.info("Submitting health metric for serviceId={}", request.getServiceId());
@@ -88,6 +89,9 @@ public class HealthMetricsService {
                             rule.getThresholdValue(),
                             rule.getSeverity())
             );
+
+            incidentService.createIncidentIfNeeded(service, violatedRules);
+
         } else {
             log.info("No rule violations detected for service={}", service.getName());
         }
