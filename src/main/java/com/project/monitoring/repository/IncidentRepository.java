@@ -13,4 +13,5 @@ public interface IncidentRepository extends JpaRepository<Incident, Long> {
     List<Incident> findByStatusOrderByCreatedAtDesc(IncidentStatus status);
 
     boolean existsByServiceIdAndStatus(Long serviceId, IncidentStatus status);
+    long countByStatus(IncidentStatus status);
 }
