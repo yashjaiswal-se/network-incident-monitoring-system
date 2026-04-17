@@ -78,4 +78,7 @@ public class MonitoredServiceService {
                 .updatedAt(service.getUpdatedAt())
                 .build();
     }
+    public List<MonitoredService> getAllServiceEntities() {
+    return repository.findAll();
+}
 }
